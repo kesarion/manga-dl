@@ -1,5 +1,5 @@
 {
-  "name": "mangafox.me",
+  "name": "manga-dl",
   "version": "0.1.0",
   "dependencies": {
     "co": "^4.6.0",
