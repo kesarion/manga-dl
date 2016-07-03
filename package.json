@@ -1,0 +1,16 @@
+{
+  "name": "mangafox.me",
+  "version": "0.1.0",
+  "dependencies": {
+    "co": "^4.6.0",
+    "jquery": "^3.0.0",
+    "jsdom": "^9.2.1",
+    "mkdirp": "^0.5.1",
+    "request": "^2.72.0"
+  },
+  "author": {
+    "name": "Alexandru Sfirlogea",
+    "email": "alexandru.sfirlogea@gmail.com"
+  },
+  "license": "MIT"
+}
