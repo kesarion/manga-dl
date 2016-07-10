@@ -1,13 +1,13 @@
 "use strict";
 
-var fs      = require('fs');
-var util    = require('util');
-var jquery  = require('jquery');
-var jsdom   = require('jsdom');
-var request = require('request');
-var co      = require('co');
-var mkdirp  = require('mkdirp');
-var child   = require('child_process');
+const fs         = require('fs');
+const util       = require('util');
+const child      = require('child_process');
+const htmlparser = require("htmlparser2");
+const domutils   = require("domutils");
+const request    = require('request');
+const co         = require('co');
+const mkdirp     = require('mkdirp');
 
 var baseUrl = 'http://mangafox.me/manga';
 
@@ -24,31 +24,33 @@ class Manga {
         if (volumes) {
             this.volumes = volumes;
         }
-        
-        this.loading = {};
     }
 
     getVolumes () {
         let self = this;
         return co(function *() {
-            let page = yield open(self.url);
-            page.$.fn.reverse = [].reverse;
-            let volumes = {};
+            let dom = yield getDom(self.url);
 
-            page.$('.chlist').reverse().each(function () {
-                let chapters = page.$(this).find('li').reverse();
-                let volume = page.$(chapters[0]).find('div * a').attr('href').replace(`${self.url}/`, '');
-                let chap = volume.indexOf('/c');
-                volume = chap !== -1 ? `${volume.slice(0, chap)}/` : '';
-                volumes[volume] = [];
-                chapters.each(function () {
-                    let chapter = page.$(this).find('div * a').attr('href')
-                        .replace(`${self.url}/${volume}c`, '');
-                    volumes[volume].push(chapter.slice(0, chapter.indexOf('/1.html')));
+            self.volumes = [];
+            for (let volume of domutils.findAll(elem => elem.attribs.class === 'chlist', dom).reverse()) {
+                let chapters = [];
+                let anchors = domutils.findAll(elem => elem.attribs.href && elem.attribs.href.indexOf(self.url) >= 0, volume.children).reverse();
+                let name = anchors[0].attribs.href.replace(`${self.url}/`, '');
+                let chapter = name.indexOf('/c');
+                name = chapter >= 0 ? `${name.slice(0, chapter)}/` : '';
+
+                for (let anchor of anchors) {
+                    chapters.push(anchor.attribs.href.replace(`${self.url}/${name}c`, '').slice(0, -7));
+                }
+
+                self.volumes.push({
+                    name: name,
+                    chapters: chapters,
+                    loading: null
                 });
-            });
+            }
 
-            return self.volumes = volumes;
+            return self.volumes;
         });
     }
 
@@ -59,71 +61,82 @@ class Manga {
 
         let self = this;
         return co(function *() {
-            if (volumes) {
-                for (let volume of volumes) {
-                    yield self.saveVolume(volume);
-                }
-            } else {
-                for (let volume in self.volumes) {
-                    if (self.volumes.hasOwnProperty(volume)) {
-                        yield self.saveVolume(volume);
-                    }
+            if (!volumes) {
+                volumes = [];
+                for (let index = 0; index < self.volumes.length; index++) {
+                    volumes.push(index);
                 }
             }
+
+            let promises = [];
+            for (let volume of volumes) {
+                promises.push(self.saveVolume(volume));
+            }
+
+            yield Promise.all(promises);
         })
     }
 
-    saveVolume (volume) {
-        this.loading[volume] = { done: 0, buffered: 0, total: 0 };
+    saveVolume (index) {
+        let volume = this.volumes[index];
+        volume.loading = { done: 0, buffered: 0, total: 0 };
         let self = this;
         return co(function *() {
-            let chapters = [];
-            for (let chapter = 0; chapter < self.volumes[volume].length; chapter++) {
-                chapters.push(self.saveChapter(volume, self.volumes[volume][chapter]));
+            let promises = [];
+            for (let chapter of volume.chapters) {
+                promises.push(self.saveChapter(volume, chapter));
             }
-            yield Promise.all(chapters);
-            delete self.loading[volume];
+            yield Promise.all(promises);
+            volume.loading = null;
         })
     }
 
     saveChapter (volume, chapter) {
-        let link = `${this.url}/${volume}c${chapter}`;
-        let path = `${this.path}/Volume ${volume ? volume.slice(1) : '01/'}Chapter ${chapter}`;
+        let link = `${this.url}/${volume.name}c${chapter}`;
+        let path = `${this.path}/Volume ${volume.name ? volume.name.slice(1) : '01/'}Chapter ${chapter}`;
 
         let self = this;
         return co(function *() {
             yield makePath(path);
-            let page = yield open(`${link}/1.html`);
 
-            let info = page.window.document.querySelector("#top_bar div div").textContent;
-            page.window.close();
-            page = null;
-            let numberOfImages = info.slice(info.indexOf("of") + 3);
-            self.loading[volume].total += (numberOfImages * 1);
-            let images = [];
-            for (let image = 1; image <= numberOfImages; image++) {
-                images.push(new Promise(resolve => {
-                    co(function *() {
-                        let page = yield open(`${link}/${image}.html`);
-                        let url = page.window.document.querySelector('#image').getAttribute('src');
+            let info = null;
 
-                        page.window.close();
-                        page = null;
-
-                        ++self.loading[volume].buffered;
-                        if (url.indexOf('.jpg') !== -1) {
-                            let file = `${path}/${pad(image, 2)}.jpg`;
-                            while(!(yield download(url, file))) {}
-                        }
-
-                        ++self.loading[volume].done;
-
-                        resolve();
-                    });
-                }));
+            while (!info) {
+                let dom = yield getDom(`${link}/1.html`);
+                info = domutils.findOne(elem => elem.name == 'div' && elem.parent.parent.attribs.id == 'top_bar', dom);
             }
 
-            yield Promise.all(images);
+            info = info.children;
+            info = info[info.length - 1].data;
+            let images = info.slice(info.indexOf("of") + 3, -3);
+            volume.loading.total += (images * 1);
+            let promises = [];
+            for (let image = 1; image <= images; image++) {
+                promises.push(new Promise(resolve => co(function *() {
+                    let img = null;
+
+                    while (!img) {
+                        let dom = yield getDom(`${link}/${image}.html`);
+                        img = domutils.findOne(elem => elem.name == 'img' && elem.attribs.id == 'image', dom);
+                    }
+
+                    let url = img.attribs.src;
+
+                    ++volume.loading.buffered;
+                    if (url.indexOf('.jpg') !== -1) {
+                        let file = `${path}/${pad(image, 2)}.jpg`;
+
+                        while(!(yield download(url, file))) {}
+                    }
+
+                    ++volume.loading.done;
+
+                    resolve();
+                    })
+                ));
+            }
+
+            yield Promise.all(promises);
 
             // console.log(`Volume ${volume} Chapter ${chapter}`);
         })
@@ -140,15 +153,15 @@ class Manga {
 
             for (let info of results) {
                 let url = `${baseUrl}/${info[2]}`;
-                manga.push(open(url).then(page => {
-                    let description = page.$('#title .summary').text();
+                manga.push(getDom(url).then(dom => {
+                    let description = domutils.findOne(elem => elem.name == 'p' && elem.attribs.class && elem.attribs.class.indexOf('summary') >= 0, dom).children[0].data;
                     return {
                         name: info[1],
                         url: url,
                         genre: info[3],
                         author: info[4],
-                        image: page.$('#series_info .cover img').attr('src'),
-                        description: description.slice(description.indexOf('\n') + 1).replace('\n', '')
+                        image: domutils.findOne(elem => elem.name == 'img' && elem.parent.attribs.class && elem.parent.attribs.class.indexOf('cover') >= 0, dom).attribs.src,
+                        description: description
                     };
                 }));
             }
@@ -158,24 +171,33 @@ class Manga {
     }
 }
 
-function open (page) {
+function getDom (url) {
     return co(function *() {
-        let p;
+        let dom;
 
-        while (!(p = yield new Promise((resolve, reject) => {
-            jsdom.env(page, (err, window) => {
+        while (!(dom = yield new Promise(resolve => {
+            request({ url: url, gzip: true }, (err, res, body) => {
                 if (err) {
-                    console.log(`Error opening page: ${page}`);
+                    console.log('Request ERROR: ' + err);
                     return resolve(null);
                 }
 
-                resolve({
-                    $: jquery(window),
-                    window: window
+                let handler = new htmlparser.DomHandler((err, dom) => {
+                    if (err) {
+                        console.log('DOM ERROR: ' + err);
+                        return resolve(null);
+                    }
+
+                    resolve(dom);
                 });
-            })
+
+                let parser = new htmlparser.Parser(handler);
+                parser.write(body);
+                parser.done();
+            });
         }))) {}
-        return p;
+
+        return dom;
     });
 }
 
@@ -189,7 +211,7 @@ function download(url, file) {
         let downloaded = yield new Promise(resolve => fs.access(file, err => resolve(!err)));
         if (!downloaded) {
             yield new Promise(resolve => {
-                request({ url: url, encoding: null, timeout: 60000 }, (err, res, data) => {
+                request({ url: url, encoding: null, gzip: true, timeout: 60000 }, (err, res, data) => {
                     if (err) {
                         console.log(`Request error [${err.code} | ${err.connect === true ? 'Connection' : 'Read'}] ${url}`);
                         downloaded = false;
@@ -240,3 +262,24 @@ function pad(n, width, z) {
 }
 
 module.exports = Manga;
+
+/*function open (page) {
+ return co(function *() {
+ let p;
+
+ while (!(p = yield new Promise((resolve, reject) => {
+ jsdom.env(page, (err, window) => {
+ if (err) {
+ console.log(`Error opening page: ${page}`);
+ return resolve(null);
+ }
+
+ resolve({
+ $: jquery(window),
+ window: window
+ });
+ })
+ }))) {}
+ return p;
+ });
+ }*/
