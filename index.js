@@ -138,7 +138,7 @@ class Manga {
 
             yield Promise.all(promises);
 
-            // console.log(`Volume ${volume} Chapter ${chapter}`);
+            //console.log(`Volume ${volume} Chapter ${chapter}`);
         })
     }
 
@@ -154,16 +154,17 @@ class Manga {
             for (let info of results) {
                 let url = `${baseUrl}/${info[2]}`;
                 manga.push(getDom(url).then(dom => {
-                    let description = domutils.findOne(elem => elem.name == 'p' && elem.attribs.class && elem.attribs.class.indexOf('summary') >= 0, dom).children[0].data;
+                    let summary = domutils.findOne(elem => elem.name == 'p' && elem.attribs.class && elem.attribs.class.indexOf('summary') >= 0, dom);
+                    let cover = domutils.findOne(elem => elem.name == 'img' && elem.parent.attribs.class && elem.parent.attribs.class.indexOf('cover') >= 0, dom);
                     return {
                         name: info[1],
                         url: url,
                         genre: info[3],
                         author: info[4],
-                        image: domutils.findOne(elem => elem.name == 'img' && elem.parent.attribs.class && elem.parent.attribs.class.indexOf('cover') >= 0, dom).attribs.src,
-                        description: description
+                        image: cover ? cover.attribs.src : '',
+                        description: summary ? summary.children[0].data : ''
                     };
-                }));
+                }).catch(console.log));
             }
 
             return yield Promise.all(manga);
