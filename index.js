@@ -28,26 +28,33 @@ class Manga {
 
     getVolumes () {
         let self = this;
+        // name might be different, so we get the base url here and the new url later
+        let baseUrl = self.url.slice(0, self.url.lastIndexOf('/'));
         return co(function *() {
             let dom = yield getDom(self.url);
-
             self.volumes = [];
-            for (let volume of domutils.findAll(elem => elem.attribs.class === 'chlist', dom).reverse()) {
-                let chapters = [];
-                let anchors = domutils.findAll(elem => elem.attribs.href && elem.attribs.href.indexOf(self.url) >= 0, volume.children).reverse();
-                let name = anchors[0].attribs.href.replace(`${self.url}/`, '');
-                let chapter = name.indexOf('/c');
-                name = chapter >= 0 ? `${name.slice(0, chapter)}/` : '';
+            try {
+                for (let volume of domutils.findAll(elem => elem.attribs.class === 'chlist', dom).reverse()) {
+                    let chapters = [];
+                    let anchors = domutils.findAll(elem => elem.attribs.href && elem.attribs.href.indexOf(baseUrl) >= 0, volume.children).reverse();
+                    let urlEnd = anchors[0].attribs.href.indexOf('/', baseUrl.length + 1);
+                    let url = anchors[0].attribs.href.slice(0, urlEnd); // new url
+                    let name = anchors[0].attribs.href.slice(urlEnd + 1);
+                    let chapter = name.indexOf('/c');
+                    name = chapter >= 0 ? `${name.slice(0, chapter)}/` : '';
 
-                for (let anchor of anchors) {
-                    chapters.push(anchor.attribs.href.replace(`${self.url}/${name}c`, '').slice(0, -7));
+                    for (let anchor of anchors) {
+                        chapters.push(anchor.attribs.href.replace(`${url}/${name}c`, '').slice(0, -7));
+                    }
+
+                    self.volumes.push({
+                        name: name,
+                        chapters: chapters,
+                        loading: null
+                    });
                 }
-
-                self.volumes.push({
-                    name: name,
-                    chapters: chapters,
-                    loading: null
-                });
+            } catch (e) {
+                console.log(e);
             }
 
             return self.volumes;
@@ -113,25 +120,25 @@ class Manga {
             let promises = [];
             for (let image = 1; image <= images; image++) {
                 promises.push(new Promise(resolve => co(function *() {
-                    let img = null;
+                        let img = null;
 
-                    while (!img) {
-                        let dom = yield getDom(`${link}/${image}.html`);
-                        img = domutils.findOne(elem => elem.name == 'img' && elem.attribs.id == 'image', dom);
-                    }
+                        while (!img) {
+                            let dom = yield getDom(`${link}/${image}.html`);
+                            img = domutils.findOne(elem => elem.name == 'img' && elem.attribs.id == 'image', dom);
+                        }
 
-                    let url = img.attribs.src;
+                        let url = img.attribs.src;
 
-                    ++volume.loading.buffered;
-                    if (url.indexOf('.jpg') !== -1) {
-                        let file = `${path}/${pad(image, 2)}.jpg`;
+                        ++volume.loading.buffered;
+                        if (url.indexOf('.jpg') !== -1) {
+                            let file = `${path}/${pad(image, 2)}.jpg`;
 
-                        while(!(yield download(url, file))) {}
-                    }
+                            while(!(yield download(url, file))) {}
+                        }
 
-                    ++volume.loading.done;
+                        ++volume.loading.done;
 
-                    resolve();
+                        resolve();
                     })
                 ));
             }
@@ -145,26 +152,26 @@ class Manga {
     static findManga (title) {
         return co(function *() {
             let results = yield new Promise((resolve, reject) =>
-                request({
-                    uri: `http://mangafox.me/ajax/search.php?term=${title}`, json: true
-                }, (err, res) => err ? reject(err) : resolve(res.body)));
+            request({
+                uri: `http://mangafox.me/ajax/search.php?term=${title}`, json: true
+            }, (err, res) => err ? reject(err) : resolve(res.body)));
 
             let manga = [];
 
             for (let info of results) {
                 let url = `${baseUrl}/${info[2]}`;
                 manga.push(getDom(url).then(dom => {
-                    let summary = domutils.findOne(elem => elem.name == 'p' && elem.attribs.class && elem.attribs.class.indexOf('summary') >= 0, dom);
-                    let cover = domutils.findOne(elem => elem.name == 'img' && elem.parent.attribs.class && elem.parent.attribs.class.indexOf('cover') >= 0, dom);
-                    return {
-                        name: info[1],
-                        url: url,
-                        genre: info[3],
-                        author: info[4],
-                        image: cover ? cover.attribs.src : '',
-                        description: summary ? summary.children[0].data : ''
-                    };
-                }).catch(console.log));
+                        let summary = domutils.findOne(elem => elem.name == 'p' && elem.attribs.class && elem.attribs.class.indexOf('summary') >= 0, dom);
+                let cover = domutils.findOne(elem => elem.name == 'img' && elem.parent.attribs.class && elem.parent.attribs.class.indexOf('cover') >= 0, dom);
+                return {
+                    name: info[1],
+                    url: url,
+                    genre: info[3],
+                    author: info[4],
+                    image: cover ? cover.attribs.src : '',
+                    description: summary ? summary.children[0].data : ''
+                };
+            }).catch(console.log));
             }
 
             return yield Promise.all(manga);
@@ -177,26 +184,26 @@ function getDom (url) {
         let dom;
 
         while (!(dom = yield new Promise(resolve => {
-            request({ url: url, gzip: true }, (err, res, body) => {
+                request({ url: url, gzip: true }, (err, res, body) => {
                 if (err) {
                     console.log('Request ERROR: ' + err);
                     return resolve(null);
                 }
 
                 let handler = new htmlparser.DomHandler((err, dom) => {
-                    if (err) {
-                        console.log('DOM ERROR: ' + err);
-                        return resolve(null);
-                    }
+                        if (err) {
+                            console.log('DOM ERROR: ' + err);
+                            return resolve(null);
+                        }
 
-                    resolve(dom);
-                });
+                        resolve(dom);
+    });
 
-                let parser = new htmlparser.Parser(handler);
-                parser.write(body);
-                parser.done();
-            });
-        }))) {}
+        let parser = new htmlparser.Parser(handler);
+        parser.write(body);
+        parser.done();
+    });
+    }))) {}
 
         return dom;
     });
@@ -213,24 +220,24 @@ function download(url, file) {
         if (!downloaded) {
             yield new Promise(resolve => {
                 request({ url: url, encoding: null, gzip: true, timeout: 60000 }, (err, res, data) => {
-                    if (err) {
-                        console.log(`Request error [${err.code} | ${err.connect === true ? 'Connection' : 'Read'}] ${url}`);
-                        downloaded = false;
-                        return resolve();
-                    }
+                if (err) {
+                    console.log(`Request error [${err.code} | ${err.connect === true ? 'Connection' : 'Read'}] ${url}`);
+                    downloaded = false;
+                    return resolve();
+                }
 
-                    fs.writeFile(file, data, (err) => {
-                        if (err) {
-                            console.log(`Error writing file: ${file}`);
-                            downloaded = false;
-                            return execute('rm', ['-rf', file]).then(resolve);
-                        }
+                fs.writeFile(file, data, (err) => {
+                if (err) {
+                    console.log(`Error writing file: ${file}`);
+                    downloaded = false;
+                    return execute('rm', ['-rf', file]).then(resolve);
+                }
 
-                        downloaded = true;
-                        resolve();
-                    });
-                });
-            });
+                downloaded = true;
+            resolve();
+        });
+        });
+        });
         }
 
         return downloaded;
@@ -239,21 +246,21 @@ function download(url, file) {
 
 function execute(command, args) {
     return new Promise((resolve, reject) => {
-        let cmd = child.spawn(command, args);
+            let cmd = child.spawn(command, args);
 
-        cmd
-            .on('error', err => {
-            console.log(err);
-            resolve();
-        })
-            .on('close', resolve);
+    cmd
+        .on('error', err => {
+        console.log(err);
+    resolve();
+})
+.on('close', resolve);
 
-        cmd.stdout.on('data', res => resolve(res.toString()));
-        cmd.stderr.on('data', err => {
-            console.log(err.toString());
-            resolve();
-        });
-    });
+    cmd.stdout.on('data', res => resolve(res.toString()));
+    cmd.stderr.on('data', err => {
+        console.log(err.toString());
+    resolve();
+});
+});
 }
 
 function pad(n, width, z) {
